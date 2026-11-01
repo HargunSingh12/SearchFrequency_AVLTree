@@ -43,6 +43,22 @@ public class AVLTree {
         root = insertOrIncrement(root, query);
     }
 
+    /**
+     * Removes one search for the given query (used when an old search
+     * expires). The count never goes below 0.
+     */
+    public void removeSearch(String query) {
+        Node n = root;
+        while (n != null) {
+            int cmp = query.compareTo(n.query);
+            if (cmp == 0) {
+                if (n.frequency > 0) n.frequency--;
+                return;
+            }
+            n = (cmp < 0) ? n.left : n.right;
+        }
+    }
+
     /** Returns how many times the query has been searched (0 if never). */
     public int getFrequency(String query) {
         Node n = root;

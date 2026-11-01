@@ -1,6 +1,7 @@
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
@@ -18,6 +19,9 @@ public class SearchFrequencyTracker {
 
     private static final DateTimeFormatter TS =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+
+    /** Searches older than this are forgotten (removed from counts and log). */
+    public static final Duration RETENTION = Duration.ofHours(1);
 
     private final AVLTree searchTree = new AVLTree();
     private final List<String> searchLog = new ArrayList<>();
@@ -104,7 +108,8 @@ public class SearchFrequencyTracker {
         String query = normalize(rawQuery);
         if (query.isEmpty()) return null;
 
-        searchTree.recordSearch(query);                 // update count in tree
+        pruneExpired();                                  // forget searches older than 1 hour
+        searchTree.recordSearch(query);                // update count in tree
         String entry = LocalDateTime.now().format(TS) + " | " + query;
         searchLog.add(entry);                            // in-memory log
         appendToLogFile(entry);                          // persistent log
@@ -128,7 +133,11 @@ public class SearchFrequencyTracker {
         }
     }
 
-    /** Re-reads a previous log so counts survive between program runs. */
+    /**
+     * Re-reads the previous log so counts survive between program runs.
+     * Only searches from the last hour are restored; older ones are
+     * dropped and removed from the log file.
+     */
     public int restoreFromLog() throws IOException {
         if (!Files.exists(logFile)) return 0;
         int n = 0;
@@ -136,12 +145,45 @@ public class SearchFrequencyTracker {
             int bar = line.indexOf(" | ");
             if (bar < 0) continue;
             String q = normalize(line.substring(bar + 3));
-            if (q.isEmpty()) continue;
+            if (q.isEmpty() || isExpired(line)) continue;
             searchTree.recordSearch(q);
             searchLog.add(line);
             n++;
         }
+        rewriteLogFile();   // file now holds only the recent searches
         return n;
+    }
+
+    /** True if the log entry's timestamp is older than RETENTION. */
+    private boolean isExpired(String logLine) {
+        try {
+            LocalDateTime t = LocalDateTime.parse(logLine.substring(0, 19), TS);
+            return t.isBefore(LocalDateTime.now().minus(RETENTION));
+        } catch (Exception e) {
+            return true;    // unreadable timestamp: treat as expired
+        }
+    }
+
+    /**
+     * Removes searches older than RETENTION from the tree counts and the log.
+     * The log is in time order, so we only need to check from the front.
+     */
+    private void pruneExpired() {
+        boolean removed = false;
+        while (!searchLog.isEmpty() && isExpired(searchLog.get(0))) {
+            String old = searchLog.remove(0);
+            searchTree.removeSearch(normalize(old.substring(old.indexOf(" | ") + 3)));
+            removed = true;
+        }
+        if (removed) rewriteLogFile();
+    }
+
+    private void rewriteLogFile() {
+        try {
+            Files.write(logFile, searchLog, StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            System.err.println("Warning: could not write to log file: " + e.getMessage());
+        }
     }
 
     // ------------------------------------------------------------------
@@ -153,7 +195,11 @@ public class SearchFrequencyTracker {
      * ties broken alphabetically. Uses heap sort on the tree's nodes.
      */
     public List<AVLTree.Node> topSearches(int n) {
-        List<AVLTree.Node> nodes = searchTree.inOrder();
+        pruneExpired();
+        List<AVLTree.Node> nodes = new ArrayList<>();
+        for (AVLTree.Node node : searchTree.inOrder()) {
+            if (node.frequency > 0) nodes.add(node);   // skip fully expired queries
+        }
         AVLTree.Node[] arr = nodes.toArray(new AVLTree.Node[0]);
         heapSort(arr);
         List<AVLTree.Node> top = new ArrayList<>();
@@ -198,11 +244,18 @@ public class SearchFrequencyTracker {
     // Accessors
     // ------------------------------------------------------------------
 
-    public List<String> getLog() { return Collections.unmodifiableList(searchLog); }
-    public int distinctQueries() { return searchTree.size(); }
+    public List<String> getLog() { pruneExpired(); return Collections.unmodifiableList(searchLog); }
     public int treeHeight() { return searchTree.height(); }
     public int vocabularySize() { return corpusCounts.size(); }
-    public int frequencyOf(String q) { return searchTree.getFrequency(normalize(q)); }
+    public int frequencyOf(String q) { pruneExpired(); return searchTree.getFrequency(normalize(q)); }
+
+    /** Number of different queries searched in the last hour. */
+    public int distinctQueries() {
+        pruneExpired();
+        int count = 0;
+        for (AVLTree.Node node : searchTree.inOrder()) if (node.frequency > 0) count++;
+        return count;
+    }
 
     /** Result of one search, returned to the user interface. */
     public static class SearchResult {

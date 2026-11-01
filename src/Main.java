@@ -18,7 +18,7 @@ public class Main {
                 + " | vocabulary: " + tracker.vocabularySize() + " words");
         int restored = tracker.restoreFromLog();
         if (restored > 0) {
-            System.out.println("Restored " + restored + " past searches from search_log.txt");
+            System.out.println("Restored " + restored + " searches from the last hour (older ones are discarded)");
         }
 
         Scanner in = new Scanner(System.in);
